@@ -1,3 +1,4 @@
+use std::io::{Read, Write};
 use std::path::Path;
 use std::{env, fs, path::PathBuf, process::Command};
 
@@ -30,12 +31,29 @@ fn rocksdb_include_dir() -> String {
 }
 
 fn bindgen_rocksdb() {
+    // Patch c.h, includes unnecessary stdarg.h import
+    let mut file = fs::File::open("rocksdb/include/rocksdb/c.h").unwrap();
+    let mut c_h = String::new();
+    file.read_to_string(&mut c_h).unwrap();
+    let new_c_h = c_h.replace("#include <stdarg.h>", "/*removed include of stdarg.h*/");
+    let mut file = fs::File::create("rocksdb/include/rocksdb/c.h").unwrap();
+    file.write_all(new_c_h.as_bytes()).unwrap();
+    std::mem::drop(file);
+
+    let extra_args = env::var("ROCKSDB_BINDGEN_CLANG_ARGS").unwrap_or_else(|_| String::new());
+    let extra_args = if extra_args.is_empty() {
+        vec![]
+    } else {
+        vec![extra_args]
+    };
+
     let bindings = bindgen::Builder::default()
         .header(rocksdb_include_dir() + "/rocksdb/c.h")
         .derive_debug(false)
         .blocklist_type("max_align_t") // https://github.com/rust-lang-nursery/rust-bindgen/issues/550
         .ctypes_prefix("libc")
         .size_t_is_usize(true)
+        .clang_args(extra_args)
         .generate()
         .expect("unable to generate rocksdb bindings");
 
@@ -214,6 +232,7 @@ fn build_rocksdb() {
     }
 
     config.define("ROCKSDB_SUPPORT_THREAD_LOCAL", None);
+    config.define("__GLIBC_MINOR__", Some("19"));
 
     if cfg!(feature = "jemalloc") {
         config.define("WITH_JEMALLOC", "ON");
